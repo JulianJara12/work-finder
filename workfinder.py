@@ -6,7 +6,8 @@ Uso:
     python workfinder.py cv --texto         # muestra también el texto leído del PDF
     python workfinder.py buscar             # trae ofertas junior de Get on Board
     python workfinder.py buscar --todas     # sin filtrar por nivel ni país
-    python workfinder.py listar             # muestra las ofertas guardadas y vigentes
+    python workfinder.py listar             # muestra las ofertas guardadas, mejores primero
+    python workfinder.py listar --minimo 50 --modalidad remoto
 """
 
 import argparse
@@ -15,6 +16,7 @@ from pathlib import Path
 
 import requests
 
+import compatibilidad
 import db
 from cv import encontrar_habilidades, leer_texto_pdf
 from fuentes import getonbrd
@@ -46,13 +48,27 @@ def comando_cv(args):
     return 0
 
 
+def cargar_habilidades_cv(ruta=RUTA_CV):
+    """Lee las habilidades de tu CV. Si no hay CV, devuelve una lista vacía y avisa."""
+    if not Path(ruta).exists():
+        print(f"(No encontré {ruta}: las ofertas se muestran sin puntaje de compatibilidad.)\n")
+        return []
+    return encontrar_habilidades(leer_texto_pdf(ruta))
+
+
 def imprimir_ofertas(ofertas, limite):
     """Muestra una lista de ofertas en la terminal."""
     for oferta in ofertas[:limite]:
         paises = ", ".join(oferta["paises"]) or "Sin país"
-        print(f"* {oferta['titulo']} | {oferta['empresa']}")
-        print(f"  {oferta['nivel']} | {oferta['modalidad']} | {paises} | {oferta['publicada']}")
-        print(f"  {oferta['url']}\n")
+        puntaje = oferta.get("puntaje")
+        etiqueta = f"[{puntaje:3d}%]" if puntaje is not None else "[  ? ]"
+        print(f"{etiqueta} {oferta['titulo']} | {oferta['empresa']}")
+        print(f"       {oferta['nivel']} | {oferta['modalidad']} | {paises} | {oferta['publicada']}")
+        if oferta.get("coinciden"):
+            print(f"       Tienes: {', '.join(oferta['coinciden'])}")
+        if oferta.get("faltan"):
+            print(f"       Te falta: {', '.join(oferta['faltan'])}")
+        print(f"       {oferta['url']}\n")
     if len(ofertas) > limite:
         print(f"(Mostrando {limite} de {len(ofertas)}. Usa --limite para ver más.)")
 
@@ -71,11 +87,12 @@ def comando_buscar(args):
     conexion.close()
 
     print(f"Encontré {len(ofertas)} ofertas; {len(ids_nuevas)} son nuevas.\n")
-    nuevas = sorted((o for o in ofertas if o["id"] in ids_nuevas),
-                    key=lambda o: o["publicada"], reverse=True)  # las más nuevas primero
-    imprimir_ofertas(nuevas, args.limite)
+    nuevas = [o for o in ofertas if o["id"] in ids_nuevas]
     if not nuevas:
         print("No hay ofertas nuevas desde tu última búsqueda. Usa 'listar' para ver todas.")
+        return 0
+    nuevas = compatibilidad.ordenar_y_filtrar(nuevas, cargar_habilidades_cv())
+    imprimir_ofertas(nuevas, args.limite)
     return 0
 
 
@@ -83,7 +100,10 @@ def comando_listar(args):
     conexion = db.conectar()
     ofertas = db.listar_ofertas(conexion, dias_vigencia=args.dias)
     conexion.close()
-    print(f"Tienes {len(ofertas)} ofertas vigentes guardadas.\n")
+
+    ofertas = compatibilidad.ordenar_y_filtrar(
+        ofertas, cargar_habilidades_cv(), minimo=args.minimo, modalidad=args.modalidad)
+    print(f"Tienes {len(ofertas)} ofertas vigentes que cumplen los filtros.\n")
     imprimir_ofertas(ofertas, args.limite)
     return 0
 
@@ -112,6 +132,10 @@ def main():
                                help="Solo ofertas vistas en los últimos N días (por defecto 7)")
     parser_listar.add_argument("--limite", type=int, default=50,
                                help="Cuántas ofertas mostrar (por defecto 50)")
+    parser_listar.add_argument("--minimo", type=int, default=0,
+                               help="Solo ofertas con al menos este %% de compatibilidad")
+    parser_listar.add_argument("--modalidad", choices=sorted(compatibilidad.MODALIDADES_FILTRO),
+                               help="Filtra por remoto, hibrido o presencial")
     parser_listar.set_defaults(funcion=comando_listar)
 
     args = parser.parse_args()
