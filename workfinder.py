@@ -8,6 +8,10 @@ Uso:
     python workfinder.py buscar --todas     # sin filtrar por nivel ni país
     python workfinder.py listar             # muestra las ofertas guardadas, mejores primero
     python workfinder.py listar --minimo 50 --modalidad remoto
+    python workfinder.py listar --estado postule
+    python workfinder.py ver 12             # detalle completo de la oferta #12
+    python workfinder.py marcar 12 postule  # cambia el estado de la oferta #12
+    python workfinder.py resumen            # cuántas ofertas tienes en cada estado
 """
 
 import argparse
@@ -62,7 +66,8 @@ def imprimir_ofertas(ofertas, limite):
         paises = ", ".join(oferta["paises"]) or "Sin país"
         puntaje = oferta.get("puntaje")
         etiqueta = f"[{puntaje:3d}%]" if puntaje is not None else "[  ? ]"
-        print(f"{etiqueta} {oferta['titulo']} | {oferta['empresa']}")
+        estado = f" ({oferta['estado']})" if oferta.get("estado", "nueva") != "nueva" else ""
+        print(f"{etiqueta} #{oferta.get('num', '?')} {oferta['titulo']} | {oferta['empresa']}{estado}")
         print(f"       {oferta['nivel']} | {oferta['modalidad']} | {paises} | {oferta['publicada']}")
         if oferta.get("coinciden"):
             print(f"       Tienes: {', '.join(oferta['coinciden'])}")
@@ -84,10 +89,10 @@ def comando_buscar(args):
 
     conexion = db.conectar()
     ids_nuevas = db.guardar_ofertas(conexion, ofertas)
+    nuevas = db.obtener_ofertas(conexion, ids_nuevas)  # releídas para tener su número corto
     conexion.close()
 
     print(f"Encontré {len(ofertas)} ofertas; {len(ids_nuevas)} son nuevas.\n")
-    nuevas = [o for o in ofertas if o["id"] in ids_nuevas]
     if not nuevas:
         print("No hay ofertas nuevas desde tu última búsqueda. Usa 'listar' para ver todas.")
         return 0
@@ -98,13 +103,58 @@ def comando_buscar(args):
 
 def comando_listar(args):
     conexion = db.conectar()
-    ofertas = db.listar_ofertas(conexion, dias_vigencia=args.dias)
+    ofertas = db.listar_ofertas(conexion, dias_vigencia=args.dias, estado=args.estado)
     conexion.close()
 
     ofertas = compatibilidad.ordenar_y_filtrar(
         ofertas, cargar_habilidades_cv(), minimo=args.minimo, modalidad=args.modalidad)
     print(f"Tienes {len(ofertas)} ofertas vigentes que cumplen los filtros.\n")
     imprimir_ofertas(ofertas, args.limite)
+    return 0
+
+
+def comando_ver(args):
+    conexion = db.conectar()
+    oferta = db.obtener_oferta(conexion, args.num)
+    conexion.close()
+    if not oferta:
+        print(f"No existe la oferta #{args.num}. Usa 'listar' para ver los números.")
+        return 1
+
+    compatibilidad.evaluar(oferta, cargar_habilidades_cv())
+    imprimir_ofertas([oferta], 1)
+    print(f"Estado: {oferta['estado']}" + (f" (desde {oferta['fecha_estado']})"
+                                           if oferta["fecha_estado"] else ""))
+    if oferta["notas"]:
+        print(f"Notas: {oferta['notas']}")
+    if oferta["salario_min"] or oferta["salario_max"]:
+        print(f"Salario: {oferta['salario_min'] or '?'} - {oferta['salario_max'] or '?'} USD")
+    print(f"Fuente: {oferta['fuente']} | Vista por primera vez: {oferta['primera_vez']}\n")
+    descripcion = oferta["descripcion"] or "(sin descripción)"
+    print(descripcion if args.completa or len(descripcion) <= 1500
+          else descripcion[:1500] + "... (usa --completa para leer todo)")
+    return 0
+
+
+def comando_marcar(args):
+    conexion = db.conectar()
+    ok = db.cambiar_estado(conexion, args.num, args.estado, notas=args.nota)
+    oferta = db.obtener_oferta(conexion, args.num) if ok else None
+    conexion.close()
+    if not ok:
+        print(f"No existe la oferta #{args.num}. Usa 'listar' para ver los números.")
+        return 1
+    print(f"Listo: #{args.num} {oferta['titulo']} ({oferta['empresa']}) ahora está en '{args.estado}'.")
+    return 0
+
+
+def comando_resumen(args):
+    conexion = db.conectar()
+    conteo = db.contar_por_estado(conexion)
+    conexion.close()
+    print(f"Tienes {sum(conteo.values())} ofertas guardadas:\n")
+    for estado in db.ESTADOS:
+        print(f"  {estado:<11} {conteo.get(estado, 0):>4}")
     return 0
 
 
@@ -136,7 +186,23 @@ def main():
                                help="Solo ofertas con al menos este %% de compatibilidad")
     parser_listar.add_argument("--modalidad", choices=sorted(compatibilidad.MODALIDADES_FILTRO),
                                help="Filtra por remoto, hibrido o presencial")
+    parser_listar.add_argument("--estado", choices=db.ESTADOS,
+                               help="Solo ofertas en ese estado (incluye rechazadas y descartadas)")
     parser_listar.set_defaults(funcion=comando_listar)
+
+    parser_ver = subcomandos.add_parser("ver", help="Muestra el detalle de una oferta")
+    parser_ver.add_argument("num", type=int, help="Número de la oferta (el que sale con #)")
+    parser_ver.add_argument("--completa", action="store_true", help="Muestra toda la descripción")
+    parser_ver.set_defaults(funcion=comando_ver)
+
+    parser_marcar = subcomandos.add_parser("marcar", help="Cambia el estado de una oferta")
+    parser_marcar.add_argument("num", type=int, help="Número de la oferta (el que sale con #)")
+    parser_marcar.add_argument("estado", choices=db.ESTADOS, help="Nuevo estado")
+    parser_marcar.add_argument("--nota", help='Un apunte, ej. --nota "Envié CV por correo"')
+    parser_marcar.set_defaults(funcion=comando_marcar)
+
+    parser_resumen = subcomandos.add_parser("resumen", help="Cuántas ofertas hay en cada estado")
+    parser_resumen.set_defaults(funcion=comando_resumen)
 
     args = parser.parse_args()
     return args.funcion(args)
