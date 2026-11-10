@@ -6,6 +6,7 @@ Uso:
     python workfinder.py cv --texto         # muestra también el texto leído del PDF
     python workfinder.py buscar             # trae ofertas junior de Get on Board
     python workfinder.py buscar --todas     # sin filtrar por nivel ni país
+    python workfinder.py listar             # muestra las ofertas guardadas y vigentes
 """
 
 import argparse
@@ -14,6 +15,7 @@ from pathlib import Path
 
 import requests
 
+import db
 from cv import encontrar_habilidades, leer_texto_pdf
 from fuentes import getonbrd
 
@@ -44,6 +46,17 @@ def comando_cv(args):
     return 0
 
 
+def imprimir_ofertas(ofertas, limite):
+    """Muestra una lista de ofertas en la terminal."""
+    for oferta in ofertas[:limite]:
+        paises = ", ".join(oferta["paises"]) or "Sin país"
+        print(f"* {oferta['titulo']} | {oferta['empresa']}")
+        print(f"  {oferta['nivel']} | {oferta['modalidad']} | {paises} | {oferta['publicada']}")
+        print(f"  {oferta['url']}\n")
+    if len(ofertas) > limite:
+        print(f"(Mostrando {limite} de {len(ofertas)}. Usa --limite para ver más.)")
+
+
 def comando_buscar(args):
     consultas = args.consulta or getonbrd.CONSULTAS
     print(f"Buscando en Get on Board: {', '.join(consultas)}...")
@@ -53,15 +66,25 @@ def comando_buscar(args):
         print(f"No pude conectarme con Get on Board: {error}")
         return 1
 
-    ofertas.sort(key=lambda o: o["publicada"], reverse=True)  # las más nuevas primero
-    print(f"Encontré {len(ofertas)} ofertas.\n")
-    for oferta in ofertas[: args.limite]:
-        paises = ", ".join(oferta["paises"]) or "Sin país"
-        print(f"* {oferta['titulo']} | {oferta['empresa']}")
-        print(f"  {oferta['nivel']} | {oferta['modalidad']} | {paises} | {oferta['publicada']}")
-        print(f"  {oferta['url']}\n")
-    if len(ofertas) > args.limite:
-        print(f"(Mostrando {args.limite} de {len(ofertas)}. Usa --limite para ver más.)")
+    conexion = db.conectar()
+    ids_nuevas = db.guardar_ofertas(conexion, ofertas)
+    conexion.close()
+
+    print(f"Encontré {len(ofertas)} ofertas; {len(ids_nuevas)} son nuevas.\n")
+    nuevas = sorted((o for o in ofertas if o["id"] in ids_nuevas),
+                    key=lambda o: o["publicada"], reverse=True)  # las más nuevas primero
+    imprimir_ofertas(nuevas, args.limite)
+    if not nuevas:
+        print("No hay ofertas nuevas desde tu última búsqueda. Usa 'listar' para ver todas.")
+    return 0
+
+
+def comando_listar(args):
+    conexion = db.conectar()
+    ofertas = db.listar_ofertas(conexion, dias_vigencia=args.dias)
+    conexion.close()
+    print(f"Tienes {len(ofertas)} ofertas vigentes guardadas.\n")
+    imprimir_ofertas(ofertas, args.limite)
     return 0
 
 
@@ -83,6 +106,13 @@ def main():
     parser_buscar.add_argument("--limite", type=int, default=20,
                                help="Cuántas ofertas mostrar (por defecto 20)")
     parser_buscar.set_defaults(funcion=comando_buscar)
+
+    parser_listar = subcomandos.add_parser("listar", help="Muestra las ofertas guardadas")
+    parser_listar.add_argument("--dias", type=int, default=7,
+                               help="Solo ofertas vistas en los últimos N días (por defecto 7)")
+    parser_listar.add_argument("--limite", type=int, default=50,
+                               help="Cuántas ofertas mostrar (por defecto 50)")
+    parser_listar.set_defaults(funcion=comando_listar)
 
     args = parser.parse_args()
     return args.funcion(args)
