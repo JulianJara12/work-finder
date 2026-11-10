@@ -3,6 +3,7 @@
 Uso:
     python workfinder.py cv                 # lee datos/cv.pdf
     python workfinder.py cv --ruta otro.pdf # lee otro archivo
+    python workfinder.py cv --texto         # muestra también el texto leído del PDF
 """
 
 import argparse
@@ -25,6 +26,11 @@ def comando_cv(args):
         print("El PDF no tiene texto que se pueda leer (¿es una imagen escaneada?).")
         return 1
 
+    if args.texto:
+        print("----- Texto leído del PDF -----")
+        print(texto)
+        print("-------------------------------")
+
     habilidades = encontrar_habilidades(texto)
     print(f"Leí {len(texto)} caracteres de {ruta}.")
     print(f"Encontré {len(habilidades)} habilidades:")
@@ -39,6 +45,8 @@ def main():
 
     parser_cv = subcomandos.add_parser("cv", help="Lee tu CV y muestra tus habilidades")
     parser_cv.add_argument("--ruta", default=str(RUTA_CV), help="Ruta al PDF de tu CV")
+    parser_cv.add_argument("--texto", action="store_true",
+                           help="Muestra el texto que se pudo leer del PDF")
     parser_cv.set_defaults(funcion=comando_cv)
 
     args = parser.parse_args()
