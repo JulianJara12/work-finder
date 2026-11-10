@@ -218,3 +218,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Work Finder: datos personales (tu CV y la base de datos) no se suben a GitHub
+datos/
+*.db
