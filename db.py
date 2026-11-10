@@ -27,9 +27,20 @@ CREATE TABLE IF NOT EXISTS ofertas (
     descripcion  TEXT,
     primera_vez  TEXT NOT NULL,      -- día en que la encontramos por primera vez
     ultima_vez   TEXT NOT NULL,      -- último día en que seguía publicada
-    estado       TEXT NOT NULL DEFAULT 'nueva'  -- nueva, postulé, descartada...
+    estado       TEXT NOT NULL DEFAULT 'nueva'  -- ver ESTADOS más abajo
 );
 """
+
+# Columnas que se agregaron después de la primera versión. Si tu base de datos es
+# antigua, conectar() las añade sin borrar nada (esto se llama una "migración").
+COLUMNAS_NUEVAS = {
+    "fecha_estado": "TEXT",  # día en que cambiaste el estado por última vez
+    "notas": "TEXT",         # tus apuntes sobre la oferta
+}
+
+# Estados posibles de una oferta, en el orden en que suele avanzar una postulación.
+ESTADOS = ["nueva", "interesa", "postule", "entrevista", "oferta", "rechazada", "descartada"]
+ESTADOS_OCULTOS = {"rechazada", "descartada"}  # no se muestran en "listar" salvo que los pidas
 
 
 def conectar(ruta=RUTA_DB):
@@ -39,6 +50,10 @@ def conectar(ruta=RUTA_DB):
     conexion = sqlite3.connect(ruta)
     conexion.row_factory = sqlite3.Row  # permite leer columnas por nombre: fila["titulo"]
     conexion.executescript(ESQUEMA)
+    existentes = {fila["name"] for fila in conexion.execute("PRAGMA table_info(ofertas)")}
+    for columna, tipo in COLUMNAS_NUEVAS.items():
+        if columna not in existentes:
+            conexion.execute(f"ALTER TABLE ofertas ADD COLUMN {columna} {tipo}")
     return conexion
 
 
@@ -80,17 +95,58 @@ def listar_ofertas(conexion, dias_vigencia=7, estado=None, hoy=None):
     """Devuelve las ofertas vistas en los últimos `dias_vigencia` días.
 
     Si una oferta no aparece en las búsquedas durante una semana, asumimos que
-    la retiraron y deja de mostrarse (pero sigue guardada).
+    la retiraron y deja de mostrarse (pero sigue guardada). Las ofertas en las
+    que ya avanzaste (postulé, entrevista...) se muestran siempre.
+    Sin `estado`, se ocultan las rechazadas y descartadas.
     """
     desde = ((hoy or date.today()) - timedelta(days=dias_vigencia)).isoformat()
-    consulta = "SELECT * FROM ofertas WHERE ultima_vez >= ?"
+    # "rowid" es un número que SQLite le da a cada fila: lo usamos como número corto (#12).
+    consulta = """SELECT rowid AS num, * FROM ofertas
+                  WHERE (ultima_vez >= ? OR estado NOT IN ('nueva', 'interesa'))"""
     parametros = [desde]
     if estado:
         consulta += " AND estado = ?"
         parametros.append(estado)
+    else:
+        consulta += f" AND estado NOT IN ({', '.join('?' for _ in ESTADOS_OCULTOS)})"
+        parametros.extend(sorted(ESTADOS_OCULTOS))
     consulta += " ORDER BY publicada DESC"
     filas = conexion.execute(consulta, parametros).fetchall()
     return [fila_a_oferta(f) for f in filas]
+
+
+def obtener_ofertas(conexion, ids):
+    """Devuelve las ofertas con esos ids (los largos, como "getonbrd:...")."""
+    if not ids:
+        return []
+    marcas = ", ".join("?" for _ in ids)
+    filas = conexion.execute(f"SELECT rowid AS num, * FROM ofertas WHERE id IN ({marcas})",
+                             list(ids)).fetchall()
+    return [fila_a_oferta(f) for f in filas]
+
+
+def obtener_oferta(conexion, num):
+    """Devuelve una oferta por su número corto, o None si no existe."""
+    fila = conexion.execute("SELECT rowid AS num, * FROM ofertas WHERE rowid = ?", (num,)).fetchone()
+    return fila_a_oferta(fila) if fila else None
+
+
+def cambiar_estado(conexion, num, estado, notas=None, hoy=None):
+    """Cambia el estado de una oferta. Devuelve False si el número no existe."""
+    if estado not in ESTADOS:
+        raise ValueError(f"Estado no válido: {estado}. Usa uno de: {', '.join(ESTADOS)}")
+    cursor = conexion.execute(
+        "UPDATE ofertas SET estado = ?, fecha_estado = ?, notas = COALESCE(?, notas) WHERE rowid = ?",
+        (estado, (hoy or date.today()).isoformat(), notas, num),
+    )
+    conexion.commit()
+    return cursor.rowcount == 1
+
+
+def contar_por_estado(conexion):
+    """Devuelve {estado: cantidad} con todas las ofertas guardadas."""
+    filas = conexion.execute("SELECT estado, COUNT(*) AS total FROM ofertas GROUP BY estado")
+    return {fila["estado"]: fila["total"] for fila in filas}
 
 
 def fila_a_oferta(fila):
