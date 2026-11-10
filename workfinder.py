@@ -4,7 +4,8 @@ Uso:
     python workfinder.py cv                 # lee datos/cv.pdf
     python workfinder.py cv --ruta otro.pdf # lee otro archivo
     python workfinder.py cv --texto         # muestra también el texto leído del PDF
-    python workfinder.py buscar             # trae ofertas junior de Get on Board
+    python workfinder.py buscar             # trae ofertas junior de todas las fuentes
+    python workfinder.py buscar --fuente remoteok
     python workfinder.py buscar --todas     # sin filtrar por nivel ni país
     python workfinder.py listar             # muestra las ofertas guardadas, mejores primero
     python workfinder.py listar --minimo 50 --modalidad remoto
@@ -23,7 +24,11 @@ import requests
 import compatibilidad
 import db
 from cv import encontrar_habilidades, leer_texto_pdf
-from fuentes import getonbrd
+from fuentes import getonbrd, remoteok
+
+# Todas las fuentes de ofertas. Para sumar un portal nuevo, crea su módulo en fuentes/
+# con NOMBRE y buscar_ofertas(consultas, solo_relevantes) y agrégalo aquí.
+FUENTES = {"getonbrd": getonbrd, "remoteok": remoteok}
 
 RUTA_CV = Path("datos") / "cv.pdf"
 
@@ -73,19 +78,26 @@ def imprimir_ofertas(ofertas, limite):
             print(f"       Tienes: {', '.join(oferta['coinciden'])}")
         if oferta.get("faltan"):
             print(f"       Te falta: {', '.join(oferta['faltan'])}")
-        print(f"       {oferta['url']}\n")
+        print(f"       {oferta['url']}  (vía {oferta['fuente']})\n")
     if len(ofertas) > limite:
         print(f"(Mostrando {limite} de {len(ofertas)}. Usa --limite para ver más.)")
 
 
 def comando_buscar(args):
-    consultas = args.consulta or getonbrd.CONSULTAS
-    print(f"Buscando en Get on Board: {', '.join(consultas)}...")
-    try:
-        ofertas = getonbrd.buscar_ofertas(consultas, solo_relevantes=not args.todas)
-    except requests.RequestException as error:
-        print(f"No pude conectarme con Get on Board: {error}")
-        return 1
+    elegidas = [args.fuente] if args.fuente else list(FUENTES)
+    ofertas = []
+    for clave in elegidas:
+        fuente = FUENTES[clave]
+        print(f"Buscando en {fuente.NOMBRE}...")
+        try:
+            encontradas = fuente.buscar_ofertas(args.consulta, solo_relevantes=not args.todas)
+        except requests.RequestException as error:
+            # Si un portal falla, seguimos con los demás en vez de detener todo.
+            print(f"  No pude conectarme con {fuente.NOMBRE}: {error}")
+            continue
+        print(f"  {len(encontradas)} ofertas")
+        ofertas.extend(encontradas)
+    print()
 
     conexion = db.conectar()
     ids_nuevas = db.guardar_ofertas(conexion, ofertas)
@@ -168,13 +180,15 @@ def main():
                            help="Muestra el texto que se pudo leer del PDF")
     parser_cv.set_defaults(funcion=comando_cv)
 
-    parser_buscar = subcomandos.add_parser("buscar", help="Busca ofertas en Get on Board")
+    parser_buscar = subcomandos.add_parser("buscar", help="Busca ofertas en todas las fuentes")
     parser_buscar.add_argument("--consulta", action="append",
                                help="Palabra a buscar (puedes repetirla varias veces)")
     parser_buscar.add_argument("--todas", action="store_true",
                                help="No filtrar por nivel junior ni por país")
     parser_buscar.add_argument("--limite", type=int, default=20,
                                help="Cuántas ofertas mostrar (por defecto 20)")
+    parser_buscar.add_argument("--fuente", choices=sorted(FUENTES),
+                               help="Busca solo en esa fuente")
     parser_buscar.set_defaults(funcion=comando_buscar)
 
     parser_listar = subcomandos.add_parser("listar", help="Muestra las ofertas guardadas")

@@ -3,11 +3,13 @@
 Usa su API pública (no necesita clave). Documentación: https://api-doc.getonbrd.com/
 """
 
-import html
-import re
 from datetime import datetime, timezone
 
 import requests
+
+from fuentes.comun import USER_AGENT, limpiar_html
+
+NOMBRE = "Get on Board"
 
 URL_BUSQUEDA = "https://www.getonbrd.com/api/v0/search/jobs"
 
@@ -33,15 +35,10 @@ def pedir_pagina(consulta, pagina=1, por_pagina=50):
         "per_page": por_pagina,
         "expand": '["company"]',  # para que incluya el nombre de la empresa
     }
-    respuesta = requests.get(URL_BUSQUEDA, params=parametros, timeout=20)
+    respuesta = requests.get(URL_BUSQUEDA, params=parametros, timeout=20,
+                             headers={"User-Agent": USER_AGENT})
     respuesta.raise_for_status()  # lanza un error si el servidor respondió mal (404, 500...)
     return respuesta.json()
-
-
-def limpiar_html(texto):
-    """Quita las etiquetas HTML (<p>, <li>...) y deja solo el texto."""
-    sin_etiquetas = re.sub(r"<[^>]+>", " ", texto or "")
-    return re.sub(r"\s+", " ", html.unescape(sin_etiquetas)).strip()
 
 
 def a_oferta(item):
@@ -82,8 +79,9 @@ def es_relevante(oferta, pais="Colombia"):
     return pais in oferta["paises"] or oferta["modalidad"] == "Remoto"
 
 
-def buscar_ofertas(consultas=CONSULTAS, paginas=2, solo_relevantes=True):
+def buscar_ofertas(consultas=None, paginas=2, solo_relevantes=True):
     """Busca con cada consulta, junta los resultados y quita los repetidos."""
+    consultas = consultas or CONSULTAS
     ofertas = {}  # usamos el id como clave para no repetir ofertas
     for consulta in consultas:
         for pagina in range(1, paginas + 1):
